@@ -1,5 +1,8 @@
 package com.namakamu.mocap
 
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -19,6 +22,7 @@ import java.util.concurrent.Executors
 class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
 
     private var landmarker: PoseLandmarker? = null
+    private var provider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private val analyzerThread = Executors.newSingleThreadExecutor()
 
@@ -30,6 +34,8 @@ class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot
     fun initPose() {
         val act = activity ?: return
+        if (landmarker != null) return
+
         val options = PoseLandmarker.PoseLandmarkerOptions.builder()
             .setBaseOptions(
                 BaseOptions.builder()
@@ -39,15 +45,18 @@ class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
             .setRunningMode(RunningMode.VIDEO)
             .setNumPoses(1)
             .build()
+
         landmarker = PoseLandmarker.createFromOptions(act, options)
     }
 
     @UsedByGodot
     fun startRecording() {
         val act = activity ?: return
+        if (landmarker == null) initPose()
+
         val future = ProcessCameraProvider.getInstance(act)
         future.addListener({
-            val provider = future.get()
+            provider = future.get()
 
             analysis = ImageAnalysis.Builder()
                 .setTargetResolution(Size(640, 480))
@@ -55,27 +64,42 @@ class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
                 .build()
 
             analysis!!.setAnalyzer(analyzerThread) { proxy ->
-                val ts = System.currentTimeMillis()
-                val bitmap = proxy.toBitmap()
-                val mpImage = BitmapImageBuilder(bitmap).build()
-                val result = landmarker?.detectForVideo(mpImage, ts)
-                val lm = result?.landmarks()?.firstOrNull()
+                try {
+                    val lm = landmarker ?: return@setAnalyzer
+                    val ts = System.currentTimeMillis()
 
-                if (lm != null) {
-                    val sb = StringBuilder("{\"t\":$ts,\"p\":[")
-                    lm.forEachIndexed { i, p ->
-                        if (i > 0) sb.append(',')
-                        sb.append("[${p.x()},${p.y()},${p.z()},${p.visibility().orElse(0f)}]")
+                    var bitmap = proxy.toBitmap()
+                    val rot = proxy.imageInfo.rotationDegrees
+                    if (rot != 0) {
+                        val matrix = Matrix().apply { postRotate(rot.toFloat()) }
+                        bitmap = Bitmap.createBitmap(
+                            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+                        )
                     }
-                    sb.append("]}")
-                    val json = sb.toString()
-                    act.runOnUiThread { emitSignal("pose_frame", json) }
+
+                    val mpImage = BitmapImageBuilder(bitmap).build()
+                    val result = lm.detectForVideo(mpImage, ts)
+                    val pose = result.landmarks().firstOrNull()
+
+                    if (pose != null) {
+                        val sb = StringBuilder("{\"t\":$ts,\"p\":[")
+                        pose.forEachIndexed { i, p ->
+                            if (i > 0) sb.append(',')
+                            sb.append("[${p.x()},${p.y()},${p.z()},${p.visibility().orElse(0f)}]")
+                        }
+                        sb.append("]}")
+                        val json = sb.toString()
+                        act.runOnUiThread { emitSignal("pose_frame", json) }
+                    }
+                } catch (e: Exception) {
+                    Log.e("MocapPlugin", "Error memproses frame", e)
+                } finally {
+                    proxy.close()
                 }
-                proxy.close()
             }
 
-            provider.unbindAll()
-            provider.bindToLifecycle(
+            provider!!.unbindAll()
+            provider!!.bindToLifecycle(
                 act as LifecycleOwner,
                 CameraSelector.DEFAULT_FRONT_CAMERA,
                 analysis!!
@@ -87,7 +111,7 @@ class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
     fun stopRecording() {
         val act = activity ?: return
         act.runOnUiThread {
-            ProcessCameraProvider.getInstance(act).get().unbindAll()
+            provider?.unbindAll()
         }
     }
 }
