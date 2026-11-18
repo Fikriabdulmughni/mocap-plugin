@@ -31,22 +31,29 @@ class MocapPlugin(godot: Godot) : GodotPlugin(godot) {
     override fun getPluginSignals(): Set<SignalInfo> =
         setOf(SignalInfo("pose_frame", String::class.java))
 
-    @UsedByGodot
+        @UsedByGodot
     fun initPose() {
         val act = activity ?: return
         if (landmarker != null) return
 
-        val options = PoseLandmarker.PoseLandmarkerOptions.builder()
-            .setBaseOptions(
-                BaseOptions.builder()
-                    .setModelAssetPath("pose_landmarker_lite.task")
+        Thread {
+            try {
+                val options = PoseLandmarker.PoseLandmarkerOptions.builder()
+                    .setBaseOptions(
+                        BaseOptions.builder()
+                            .setModelAssetPath("pose_landmarker_lite.task")
+                            .build()
+                    )
+                    .setRunningMode(RunningMode.VIDEO)
+                    .setNumPoses(1)
                     .build()
-            )
-            .setRunningMode(RunningMode.VIDEO)
-            .setNumPoses(1)
-            .build()
 
-        landmarker = PoseLandmarker.createFromOptions(act, options)
+                landmarker = PoseLandmarker.createFromOptions(act, options)
+                Log.i(TAG, "PoseLandmarker siap")
+            } catch (e: Exception) {
+                Log.e(TAG, "Gagal membuat PoseLandmarker", e)
+            }
+        }.start()
     }
 
     @UsedByGodot
